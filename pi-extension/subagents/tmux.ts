@@ -10,7 +10,7 @@
  * the parent pi's pane (`$TMUX_PANE`) so they follow the agent rather than
  * the user's focus.
  */
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, execSync } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,8 +29,13 @@ function hasCommand(command: string): boolean {
 
   let available = false;
   try {
-    execFileSync("sh", ["-c", `command -v ${command}`], { stdio: "ignore" });
-    available = true;
+    if (process.platform === "win32") {
+      execSync(`where.exe ${command}`, { stdio: "ignore" });
+      available = true;
+    } else {
+      execFileSync("sh", ["-c", `command -v ${command}`], { stdio: "ignore" });
+      available = true;
+    }
   } catch {
     available = false;
   }

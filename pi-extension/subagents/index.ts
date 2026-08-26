@@ -13,7 +13,7 @@ import {
   copyFileSync,
   unlinkSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import {
   isMuxAvailable,
   muxSetupHint,
@@ -1245,7 +1245,7 @@ async function launchSubagent(
     : `${roleBlock}\n\n${modeHint}\n\n${params.task}\n\n${summaryInstruction}`;
   // ── Claude Code CLI path ──
   if (agentDefs?.cli === "claude") {
-    const sentinelFile = `/tmp/pi-claude-${id}-done`;
+    const sentinelFile = join(tmpdir(), `pi-claude-${id}-done`);
     const pluginDir = join(SUBAGENTS_DIR, "plugin");
 
     const cmdParts: string[] = [];
@@ -1459,7 +1459,7 @@ async function launchSubagent(
  * and removes the entry from runningSubagents.
  */
 const CLAUDE_SESSIONS_DIR = join(
-  process.env.HOME ?? "/tmp",
+  process.env.HOME ?? homedir(),
   ".pi", "agent", "sessions", "claude-code",
 );
 
