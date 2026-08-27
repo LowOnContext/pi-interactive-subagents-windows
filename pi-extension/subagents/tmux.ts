@@ -177,7 +177,7 @@ export function replaceScriptExtension(path: string, newExt: string): string {
  * Return the script extension of a path, or null if none matches a known
  * script extension.
  */
-function getScriptExtension(path: string): string | null {
+export function getScriptExtension(path: string): string | null {
   const lastDot = path.lastIndexOf(".");
   if (lastDot === -1) return null;
   const ext = path.slice(lastDot);
@@ -333,19 +333,33 @@ export function sendCommand(surface: string, command: string): void {
 export function sendLongCommand(
   surface: string,
   command: string,
-  options?: { scriptPath?: string; scriptPreamble?: string },
+  options?: {
+    scriptPath?: string;
+    scriptPreamble?: string;
+    /** For testing: intercept the sendCommand call to verify the normalized path. */
+    sendCommandOverride?: (surface: string, command: string) => void;
+    /** For testing: override shell detection (e.g. "pwsh" for Windows). */
+    shellOverride?: string | null;
+  },
 ): string {
-  const shell = hasShell();
+  const shell = options?.shellOverride ?? hasShell();
   const isPowerShell = shell === "pwsh" || shell === "powershell";
 
   const ext = isPowerShell ? ".ps1" : ".sh";
-  const scriptPath =
+  let scriptPath =
     options?.scriptPath ??
     join(
       tmpdir(),
       "pi-subagent-scripts",
       `cmd-${Date.now()}-${Math.random().toString(16).slice(2, 8)}${ext}`,
     );
+
+  // Normalize extension to match detected shell — covers cases where callers
+  // (e.g. index.ts) pass a path with a mismatched extension.
+  if (getScriptExtension(scriptPath) !== ext) {
+    scriptPath = replaceScriptExtension(scriptPath, ext);
+  }
+
   mkdirSync(dirname(scriptPath), { recursive: true });
 
   const scriptParts: string[] = [];
@@ -369,9 +383,19 @@ export function sendLongCommand(
     // -NoProfile avoids slow profile loading on pane startup.
     // -NoLogo suppresses the PowerShell banner to keep screen capture clean.
     const shellExe = shell === "pwsh" ? "pwsh.exe" : "powershell.exe";
-    sendCommand(surface, `${shellExe} -NoProfile -NoLogo -File ${shellEscapePowerShell(scriptPath)}`);
+    const cmd = `${shellExe} -NoProfile -NoLogo -File ${shellEscapePowerShell(scriptPath)}`;
+    if (options?.sendCommandOverride) {
+      options.sendCommandOverride(surface, cmd);
+    } else {
+      sendCommand(surface, cmd);
+    }
   } else {
-    sendCommand(surface, `bash ${shellEscape(scriptPath)}`);
+    const cmd = `bash ${shellEscape(scriptPath)}`;
+    if (options?.sendCommandOverride) {
+      options.sendCommandOverride(surface, cmd);
+    } else {
+      sendCommand(surface, cmd);
+    }
   }
   return scriptPath;
 }
@@ -447,10 +471,12 @@ export const __pollForExitTest__ = { interpretExitSidecar };
 
 export const __tmuxTest__ = {
   replaceScriptExtension,
+  getScriptExtension,
   buildScriptInvocation,
   shellEscapePowerShell,
   convertBashToPowerShell,
   hasShell,
+  sendLongCommand,
 };
 
 /**

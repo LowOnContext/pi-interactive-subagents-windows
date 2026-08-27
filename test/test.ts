@@ -3016,12 +3016,94 @@ describe("tmux.ts", () => {
   });
 });
 
+describe("sendLongCommand extension normalization (ticket #17)", () => {
+  // sendLongCommand receives a scriptPath from callers (index.ts) and writes
+  // it to disk, then sends an execute command to the tmux pane. The bug:
+  // when scriptPath is provided (not the fallback), the extension is NOT
+  // normalized to match the detected shell — so on Windows PowerShell,
+  // a .sh file gets written and then rejected by `pwsh.exe -File`.
+  //
+  // We test via sendLongCommand's sendCommandOverride + shellOverride options
+  // (added for testability) to capture the execute command without tmux.
+
+  const { sendLongCommand } = __tmuxTest__;
+
+  it("on PowerShell (pwsh), .sh scriptPath is normalized to .ps1 before execute", () => {
+    let cmd = "";
+    sendLongCommand("test-pane", "echo hello", {
+      scriptPath: "/tmp/artifacts/scout-abc.sh",
+      shellOverride: "pwsh",
+      sendCommandOverride: (_s: string, c: string) => {
+        cmd = c;
+      },
+    });
+
+    assert.ok(
+      cmd.includes(".ps1"),
+      `expected .ps1 in command, got: ${cmd}`,
+    );
+    assert.ok(
+      !cmd.includes("scout-abc.sh"),
+      `command should not reference .sh file, got: ${cmd}`,
+    );
+  });
+
+  it("on PowerShell 5.1, .sh scriptPath is normalized to .ps1", () => {
+    let cmd = "";
+    sendLongCommand("test-pane", "dir C:\\", {
+      scriptPath: "/tmp/run.sh",
+      shellOverride: "powershell",
+      sendCommandOverride: (_s: string, c: string) => {
+        cmd = c;
+      },
+    });
+
+    assert.ok(
+      cmd.includes(".ps1"),
+      `expected .ps1 in command, got: ${cmd}`,
+    );
+  });
+
+  it("on bash, .ps1 scriptPath is normalized to .sh (symmetric case)", () => {
+    let cmd = "";
+    sendLongCommand("test-pane", "ls -la", {
+      scriptPath: "/tmp/artifacts/scout-abc.ps1",
+      shellOverride: "bash",
+      sendCommandOverride: (_s: string, c: string) => {
+        cmd = c;
+      },
+    });
+
+    assert.ok(
+      cmd.includes(".sh"),
+      `expected .sh in command, got: ${cmd}`,
+    );
+  });
+
+  it("no normalization when extension already matches the detected shell", () => {
+    let cmd = "";
+    sendLongCommand("test-pane", "echo ok", {
+      scriptPath: "/tmp/run.sh",
+      shellOverride: "bash",
+      sendCommandOverride: (_s: string, c: string) => {
+        cmd = c;
+      },
+    });
+
+    assert.ok(
+      cmd.includes("run.sh"),
+      `expected run.sh in command, got: ${cmd}`,
+    );
+  });
+});
+
 // Re-export new functions for test.ts top-level __test__ access
 import {
   shellEscapePowerShell as __shellEscapePowerShell__,
   convertBashToPowerShell as __convertBashToPowerShell__,
   hasShell as __hasShell__,
   replaceScriptExtension as __replaceScriptExtension__,
+  getScriptExtension as __getScriptExtension__,
   buildScriptInvocation as __buildScriptInvocation__,
 } from "../pi-extension/subagents/tmux.ts";
 
@@ -3030,5 +3112,6 @@ Object.assign(subagentsModule.__test__, {
   convertBashToPowerShell: __convertBashToPowerShell__,
   hasShell: __hasShell__,
   replaceScriptExtension: __replaceScriptExtension__,
+  getScriptExtension: __getScriptExtension__,
   buildScriptInvocation: __buildScriptInvocation__,
 });
