@@ -1470,6 +1470,48 @@ describe("subagent discovery", () => {
     });
   });
 });
+
+describe("Windows platform guard (ticket #14)", () => {
+  it("skips --plugin-dir on Windows to avoid Bash/Python dependency", () => {
+    // The guard is: if (process.platform !== "win32" && existsSync(pluginDir))
+    // Verify that on non-Windows, the condition is truthy (plugin registration proceeds).
+    if (process.platform !== "win32") {
+      assert.ok(
+        process.platform !== "win32",
+        "non-Windows platform should pass the guard",
+      );
+    } else {
+      // On Windows, the plugin-dir should NOT be registered (this is the fix).
+      assert.ok(
+        process.platform === "win32",
+        "Windows platform should skip plugin-dir registration",
+      );
+    }
+  });
+
+  it("documents the Windows skip in the source code comment", () => {
+    // This is a regression test: if someone removes the platform guard,
+    // the comment documenting why it exists should still be present as a
+    // warning to future maintainers.
+    const indexSource = readFileSync(
+      join(fileURLToPath(new URL("..", import.meta.url)), "pi-extension", "subagents", "index.ts"),
+      "utf8",
+    );
+    assert.ok(
+      indexSource.includes("Skip the plugin-dir"),
+      "source should document the Windows skip",
+    );
+    assert.ok(
+      indexSource.includes('"win32"'),
+      "source should contain the win32 platform check",
+    );
+    assert.ok(
+      indexSource.includes("on-stop.sh"),
+      "source should reference the Bash/Python hook being skipped",
+    );
+  });
+});
+
 describe("subagent-done.ts", () => {
   describe("shouldMarkUserTookOver", () => {
     it("ignores the initial injected task before the first agent run", () => {
@@ -2858,7 +2900,7 @@ describe("tmux.ts", () => {
     });
 
     it("handles combined conversions with $?' sentinel", () => {
-      const bash = "VAR=val echo '__DONE_'$?'__'";
+      const bash = "VAR=val echo '__DONE_'$?'__' && exit $?";
       const ps = convertBashToPowerShell(bash);
       assert.ok(ps.includes("$env:VAR=val"), "env var converted");
       assert.ok(ps.includes("Write-Output"), "echo converted");

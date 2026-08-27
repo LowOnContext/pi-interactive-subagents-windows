@@ -1253,7 +1253,12 @@ async function launchSubagent(
     cmdParts.push("claude");
     cmdParts.push("--dangerously-skip-permissions");
 
-    if (existsSync(pluginDir)) {
+    // Skip the plugin-dir (and its Bash/Python on-stop.sh hook) on Windows.
+    // The hook requires python3 which is not available in typical Windows
+    // environments, and the user does not configure cli: "claude" agents.
+    // A Claude subagent spawned on Windows falls back to terminal sentinel
+    // (__SUBAGENT_DONE__) detection, which is platform-agnostic.
+    if (process.platform !== "win32" && existsSync(pluginDir)) {
       cmdParts.push("--plugin-dir", shellEscape(pluginDir));
     }
 
