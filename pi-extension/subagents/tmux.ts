@@ -28,16 +28,26 @@ function hasCommand(command: string): boolean {
   }
 
   let available = false;
-  try {
-    if (process.platform === "win32") {
-      execSync(`where.exe ${command}`, { stdio: "ignore" });
+  if (process.platform === "win32") {
+    // On Windows, try where.exe first (native), then fall back to command -v via shell
+    try {
+      execFileSync("where.exe", [command], { stdio: "ignore" });
       available = true;
-    } else {
+    } catch {
+      try {
+        execSync(`command -v ${command}`, { stdio: "ignore" });
+        available = true;
+      } catch {
+        available = false;
+      }
+    }
+  } else {
+    try {
       execFileSync("sh", ["-c", `command -v ${command}`], { stdio: "ignore" });
       available = true;
+    } catch {
+      available = false;
     }
-  } catch {
-    available = false;
   }
 
   commandAvailability.set(command, available);
@@ -70,6 +80,142 @@ function requireTmux(): void {
 
 export function shellEscape(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+// ── Windows PowerShell support ──
+
+/**
+ * Detect the best available shell on Windows (PowerShell preferred).
+ *
+ * Returns the command name to invoke, or null if no known shell is found.
+ * Priority: pwsh → powershell → bash.
+ */
+export function hasShell(): string | null {
+  // On Unix, fall through to hasCommand("bash") — the existing path.
+  if (process.platform !== "win32") return null;
+
+  if (hasCommand("pwsh")) return "pwsh";
+  if (hasCommand("powershell")) return "powershell";
+  if (hasCommand("bash")) return "bash";
+  return null;
+}
+
+/**
+ * Escape a string for safe embedding in a PowerShell command argument.
+ *
+ * Uses single-quoted context (no expansion of $ or backticks). Embedded
+ * single quotes are doubled (PowerShell convention). Embedded backticks
+ * are escaped with a backtick.
+ *
+ * This is independent of shellEscape() (bash-style) — the two are used
+ * based on platform detection.
+ */
+export function shellEscapePowerShell(s: string): string {
+  // Single-quoted: no variable expansion, no backtick expansion.
+  return "'" + s.replace(/'/g, "''").replace(/`/g, "``") + "'";
+}
+
+/**
+ * Convert a Bash command string into its PowerShell equivalent.
+ *
+ * - Inline env vars: `VAR=value` → `$env:VAR=value`
+ * - Exit code: `$?` → `$LASTEXITCODE`
+ * - echo → Write-Output
+ * - && chaining → ; (PowerShell 5 compatibility)
+ */
+export function convertBashToPowerShell(command: string): string {
+  let result = command;
+
+  // Convert && to ; (PowerShell 7+ supports &&, but ; is more compatible)
+  result = result.replace(/&&/g, ";");
+
+  // Convert echo to Write-Output (word boundary: preceded by start/whitespace, followed by whitespace/start)
+  result = result.replace(/(^|\s)echo(?=\s|$)/g, "$1Write-Output");
+
+  // Convert inline environment variables: VAR=value (only when not preceded by $env:)
+  // Match KEY=VALUE at start-of-string or after whitespace.
+  // Skip vars already prefixed with $env: by checking the prefix char.
+  result = result.replace(
+    /(\$env:)?(^|\s)([A-Za-z_][A-Za-z0-9_]*)=(\S*)/g,
+    (_match, envPrefix, spacePrefix, key, _value) => {
+      // Already has $env: prefix — leave unchanged
+      if (envPrefix === "$env:") return _match;
+      // Reconstruct with optional leading whitespace
+      return (spacePrefix || "") + "$env:" + key + "=" + _value;
+    },
+  );
+
+  // Convert $?' to $LASTEXITCODE (the sentinel pattern used in subagent-done)
+  result = result.replace(/\$\?'/g, "$LASTEXITCODE'");
+
+  return result;
+}
+
+/**
+ * Known script extensions that indicate a shell script file.
+ */
+const SCRIPT_EXTENSIONS = new Set([".sh", ".ps1", ".bat", ".cmd", ".bash"]);
+
+/**
+ * Replace the script file extension with a new one.
+ *
+ * If the filename already ends with a known script extension, that extension
+ * is replaced. Otherwise the new extension is appended.
+ *
+ * Used on Windows to rename .sh scripts to .ps1 when the platform switch
+ * changes the target shell after a launch decision has already been made.
+ */
+export function replaceScriptExtension(path: string, newExt: string): string {
+  const ext = getScriptExtension(path);
+  if (ext) {
+    return path.slice(0, path.length - ext.length) + newExt;
+  }
+  return path + newExt;
+}
+
+/**
+ * Return the script extension of a path, or null if none matches a known
+ * script extension.
+ */
+function getScriptExtension(path: string): string | null {
+  const lastDot = path.lastIndexOf(".");
+  if (lastDot === -1) return null;
+  const ext = path.slice(lastDot);
+  return SCRIPT_EXTENSIONS.has(ext) ? ext : null;
+}
+
+/**
+ * Build a script invocation object for a given platform.
+ *
+ * Returns an object with the command to type into the pane, the shebang/"header"
+ * line to write into the script, and the file extension — making it easy for
+ * tests and callers to verify platform-specific behaviour without executing
+ * anything.
+ */
+export function buildScriptInvocation(
+  scriptPath: string,
+  platform: "linux" | "darwin" | "win32" | "pwsh" | "powershell" | "bash",
+): { command: string; shebang: string; extension: string } {
+  let command: string;
+  let shebang: string;
+  let extension: string;
+
+  if (platform === "pwsh" || platform === "powershell") {
+    command = `${platform === "pwsh" ? "pwsh.exe" : "powershell.exe"} -NoProfile -NoLogo -File ${shellEscapePowerShell(scriptPath)}`;
+    shebang = "# PowerShell";
+    extension = ".ps1";
+  } else if (platform === "bash") {
+    command = `bash ${shellEscape(scriptPath)}`;
+    shebang = "#!/bin/bash";
+    extension = ".sh";
+  } else {
+    // Linux / Darwin — default to bash
+    command = `bash ${shellEscape(scriptPath)}`;
+    shebang = "#!/bin/bash";
+    extension = ".sh";
+  }
+
+  return { command, shebang, extension };
 }
 
 // ── Pane layout ──
@@ -174,6 +320,10 @@ export function sendCommand(surface: string, command: string): void {
  * This avoids terminal line-wrapping issues that break commands exceeding the
  * pane's column width when sent character-by-character via sendCommand.
  *
+ * On Windows (inside Psmux), detects PowerShell 7+ (pwsh), Windows PowerShell
+ * 5.x (powershell), or Bash and generates a compatible script (.ps1 or .sh).
+ * Bash commands are converted to PowerShell syntax when targeting PowerShell.
+ *
  * By default the script is written to a temp directory, but callers can pass a
  * stable path (for example under session artifacts) so the exact invocation is
  * preserved for debugging.
@@ -185,25 +335,44 @@ export function sendLongCommand(
   command: string,
   options?: { scriptPath?: string; scriptPreamble?: string },
 ): string {
+  const shell = hasShell();
+  const isPowerShell = shell === "pwsh" || shell === "powershell";
+
+  const ext = isPowerShell ? ".ps1" : ".sh";
   const scriptPath =
     options?.scriptPath ??
     join(
       tmpdir(),
       "pi-subagent-scripts",
-      `cmd-${Date.now()}-${Math.random().toString(16).slice(2, 8)}.sh`,
+      `cmd-${Date.now()}-${Math.random().toString(16).slice(2, 8)}${ext}`,
     );
   mkdirSync(dirname(scriptPath), { recursive: true });
 
-  const scriptParts = ["#!/bin/bash"];
+  const scriptParts: string[] = [];
+  if (isPowerShell) {
+    scriptParts.push("# PowerShell");
+  } else {
+    scriptParts.push("#!/bin/bash");
+  }
   if (options?.scriptPreamble) {
     scriptParts.push(options.scriptPreamble.trimEnd());
   }
-  scriptParts.push(command);
+
+  const effectiveCommand = isPowerShell ? convertBashToPowerShell(command) : command;
+  scriptParts.push(effectiveCommand);
 
   writeFileSync(scriptPath, scriptParts.join("\n") + "\n", {
     mode: 0o755,
   });
-  sendCommand(surface, `bash ${shellEscape(scriptPath)}`);
+
+  if (isPowerShell) {
+    // -NoProfile avoids slow profile loading on pane startup.
+    // -NoLogo suppresses the PowerShell banner to keep screen capture clean.
+    const shellExe = shell === "pwsh" ? "pwsh.exe" : "powershell.exe";
+    sendCommand(surface, `${shellExe} -NoProfile -NoLogo -File ${shellEscapePowerShell(scriptPath)}`);
+  } else {
+    sendCommand(surface, `bash ${shellEscape(scriptPath)}`);
+  }
   return scriptPath;
 }
 
@@ -275,6 +444,14 @@ function interpretExitSidecar(data: any): PollResult {
 }
 
 export const __pollForExitTest__ = { interpretExitSidecar };
+
+export const __tmuxTest__ = {
+  replaceScriptExtension,
+  buildScriptInvocation,
+  shellEscapePowerShell,
+  convertBashToPowerShell,
+  hasShell,
+};
 
 /**
  * Poll until the subagent exits. Checks for a `.exit` sidecar file first

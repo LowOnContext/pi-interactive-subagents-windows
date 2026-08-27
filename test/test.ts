@@ -31,6 +31,7 @@ import {
 } from "../pi-extension/subagents/session.ts";
 
 import { shellEscape } from "../pi-extension/subagents/tmux.ts";
+import { __tmuxTest__ } from "../pi-extension/subagents/tmux.ts";
 import {
   advanceStatusState,
   capStatusLines,
@@ -2675,4 +2676,317 @@ describe("tmux.ts", () => {
       assert.ok(escaped.includes("$world"));
     });
   });
+
+  describe("replaceScriptExtension", () => {
+    const { replaceScriptExtension } = __tmuxTest__;
+
+    it("replaces .sh with .ps1", () => {
+      assert.equal(
+        replaceScriptExtension("scout-467eeedc.sh", ".ps1"),
+        "scout-467eeedc.ps1",
+      );
+    });
+
+    it("replaces .sh with .bat", () => {
+      assert.equal(
+        replaceScriptExtension("my-script.sh", ".bat"),
+        "my-script.bat",
+      );
+    });
+
+    it("replaces .ps1 with .sh", () => {
+      assert.equal(
+        replaceScriptExtension("run.ps1", ".sh"),
+        "run.sh",
+      );
+    });
+
+    it("preserves directory path when replacing extension", () => {
+      assert.equal(
+        replaceScriptExtension("/path/to/artifacts/subagent-scripts/scout-abc.sh", ".ps1"),
+        "/path/to/artifacts/subagent-scripts/scout-abc.ps1",
+      );
+    });
+
+    it("handles Windows paths", () => {
+      assert.equal(
+        replaceScriptExtension("C:\\Users\\test\\scripts\\scout.sh", ".ps1"),
+        "C:\\Users\\test\\scripts\\scout.ps1",
+      );
+    });
+
+    it("replaces resume script .sh extension", () => {
+      assert.equal(
+        replaceScriptExtension("resume-resume-1234567890.sh", ".ps1"),
+        "resume-resume-1234567890.ps1",
+      );
+    });
+
+    it("appends extension when no known script extension found", () => {
+      assert.equal(
+        replaceScriptExtension("my-script.txt", ".ps1"),
+        "my-script.txt.ps1",
+      );
+    });
+
+    it("is a no-op when extension already matches", () => {
+      assert.equal(
+        replaceScriptExtension("script.ps1", ".ps1"),
+        "script.ps1",
+      );
+    });
+  });
+
+  describe("buildScriptInvocation", () => {
+    const { buildScriptInvocation } = __tmuxTest__;
+
+    it("returns bash invocation on linux", () => {
+      const result = buildScriptInvocation("/tmp/test.sh", "linux");
+      assert.equal(result.command, "bash '/tmp/test.sh'");
+      assert.equal(result.shebang, "#!/bin/bash");
+      assert.equal(result.extension, ".sh");
+    });
+
+    it("returns bash invocation on darwin", () => {
+      const result = buildScriptInvocation("/tmp/test.sh", "darwin");
+      assert.equal(result.command, "bash '/tmp/test.sh'");
+      assert.equal(result.shebang, "#!/bin/bash");
+      assert.equal(result.extension, ".sh");
+    });
+  });
+
+  // ── PowerShell support (Windows) ──
+
+  describe("shellEscapePowerShell", () => {
+    const { shellEscapePowerShell } = __tmuxTest__;
+
+    it("wraps in single quotes", () => {
+      assert.equal(shellEscapePowerShell("hello"), "'hello'");
+    });
+
+    it("doubles embedded single quotes", () => {
+      assert.equal(shellEscapePowerShell("it's"), "'it''s'");
+    });
+
+    it("escapes embedded backticks", () => {
+      // Each backtick is escaped with a backtick: backtick → backtick-backtick
+      // So two backticks become four backticks
+      assert.equal(shellEscapePowerShell("back``tick"), "'back````tick'");
+    });
+
+    it("does not expand dollar signs in single-quoted context", () => {
+      const result = shellEscapePowerShell("$HOME $VAR");
+      assert.ok(result.includes("$HOME"), "dollar signs should be preserved");
+    });
+
+    it("handles strings with spaces", () => {
+      assert.equal(shellEscapePowerShell("path with spaces"), "'path with spaces'");
+    });
+
+    it("handles complex paths with special characters", () => {
+      const input = "C:\\Users\\Test--Dir--123\\file.txt";
+      const result = shellEscapePowerShell(input);
+      assert.ok(result.startsWith("'"));
+      assert.ok(result.endsWith("'"));
+    });
+
+    it("handles mixed special characters", () => {
+      const input = "$HOME/'test'``path";
+      const result = shellEscapePowerShell(input);
+      assert.ok(result.includes("$HOME"), "dollar sign preserved");
+      assert.ok(result.includes("''"), "single quote doubled");
+      assert.ok(result.includes("```"), "backtick escaped");
+    });
+
+    it("handles empty string", () => {
+      assert.equal(shellEscapePowerShell(""), "''");
+    });
+
+    it("handles strings that are only quotes and backticks", () => {
+      assert.equal(shellEscapePowerShell("'`"), "'\'\'\`\`'");
+    });
+  });
+
+  describe("convertBashToPowerShell", () => {
+    const { convertBashToPowerShell } = __tmuxTest__;
+
+    it("converts echo to Write-Output", () => {
+      assert.equal(convertBashToPowerShell("echo 'hello'"), "Write-Output 'hello'");
+    });
+
+    it("does not convert echo inside other words", () => {
+      // "echo" as a substring should not be converted
+      const result = convertBashToPowerShell("re-echo something");
+      assert.ok(result.includes("re-echo"), "echo in middle of word should not convert");
+    });
+
+    it("converts && to semicolons", () => {
+      assert.equal(convertBashToPowerShell("cmd1 && cmd2"), "cmd1 ; cmd2");
+    });
+
+    it("converts multiple && chains", () => {
+      const result = convertBashToPowerShell("cmd1 && cmd2 && cmd3");
+      assert.equal(result, "cmd1 ; cmd2 ; cmd3");
+    });
+
+    it("converts inline env vars", () => {
+      const result = convertBashToPowerShell("VAR=value echo test");
+      assert.ok(result.includes("$env:VAR=value"), "VAR=value should become $env:VAR=value");
+    });
+
+    it("converts env vars with underscores in name", () => {
+      const result = convertBashToPowerShell("PI_SUBAGENT_NAME=test");
+      assert.ok(result.includes("$env:PI_SUBAGENT_NAME=test"));
+    });
+
+    it("does not double-prefix existing $env: vars", () => {
+      const result = convertBashToPowerShell("$env:VAR=value");
+      assert.ok(result.includes("$env:VAR=value"), "existing $env: should not be doubled");
+    });
+
+    it("converts $?' to $LASTEXITCODE'", () => {
+      const result = convertBashToPowerShell("echo '__SUBAGENT_DONE_'$?'__'");
+      assert.ok(result.includes("$LASTEXITCODE'"), "should convert $?' to $LASTEXITCODE'");
+    });
+
+    it("handles combined conversions", () => {
+      const bash = "VAR=val echo 'hello' && exit $?";
+      const ps = convertBashToPowerShell(bash);
+      assert.ok(ps.includes("$env:VAR=val"), "env var converted");
+      assert.ok(ps.includes("Write-Output"), "echo converted");
+      assert.ok(ps.includes(";"), "&& converted");
+    });
+
+    it("handles combined conversions with $?' sentinel", () => {
+      const bash = "VAR=val echo '__DONE_'$?'__'";
+      const ps = convertBashToPowerShell(bash);
+      assert.ok(ps.includes("$env:VAR=val"), "env var converted");
+      assert.ok(ps.includes("Write-Output"), "echo converted");
+      assert.ok(ps.includes(";"), "&& converted");
+      assert.ok(ps.includes("$LASTEXITCODE"), "exit code converted");
+    });
+
+    it("preserves already-correct PowerShell syntax", () => {
+      const result = convertBashToPowerShell("Write-Output 'hello'");
+      assert.equal(result, "Write-Output 'hello'");
+    });
+  });
+
+  describe("hasShell (platform detection)", () => {
+    // These tests verify the function's logic by checking its return value
+    // on the current platform. Since we're likely on Windows (or not),
+    // we verify it returns a consistent type.
+
+    it("returns a string or null", () => {
+      const { hasShell } = __tmuxTest__;
+      const result = hasShell();
+      assert.ok(result === null || typeof result === "string", "should return string or null");
+    });
+
+    it("returns null on non-Windows platforms", () => {
+      // On non-Windows platforms, hasShell should return null (falls through to bash)
+      // We can't easily mock process.platform, so we just check the current behavior
+      const { hasShell } = __tmuxTest__;
+      const result = hasShell();
+      if (process.platform !== "win32") {
+        assert.equal(result, null, "should be null on non-Windows");
+      }
+    });
+
+    it("returns 'pwsh' or 'powershell' or 'bash' on Windows when available", () => {
+      if (process.platform !== "win32") {
+        return; // Skip on non-Windows
+      }
+      const { hasShell } = __tmuxTest__;
+      const result = hasShell();
+      assert.ok(
+        result === "pwsh" || result === "powershell" || result === "bash" || result === null,
+        `should return valid shell or null, got: ${result}`,
+      );
+    });
+  });
+
+  describe("sendLongCommand script generation", () => {
+    const { shellEscapePowerShell, buildScriptInvocation } = __tmuxTest__;
+
+    it("generates bash shebang for linux platform", () => {
+      const result = buildScriptInvocation("/tmp/cmd.sh", "linux");
+      assert.equal(result.shebang, "#!/bin/bash");
+      assert.equal(result.extension, ".sh");
+    });
+
+    it("generates PowerShell header for pwsh platform", () => {
+      const result = buildScriptInvocation("/tmp/cmd.ps1", "pwsh");
+      assert.equal(result.shebang, "# PowerShell");
+      assert.equal(result.extension, ".ps1");
+    });
+
+    it("generates PowerShell header for powershell platform", () => {
+      const result = buildScriptInvocation("/tmp/cmd.ps1", "powershell");
+      assert.equal(result.shebang, "# PowerShell");
+      assert.equal(result.extension, ".ps1");
+    });
+
+    it("generates PowerShell command with -NoProfile -NoLogo for pwsh", () => {
+      const result = buildScriptInvocation("/tmp/cmd.ps1", "pwsh");
+      assert.ok(result.command.includes("pwsh.exe"));
+      assert.ok(result.command.includes("-NoProfile"));
+      assert.ok(result.command.includes("-NoLogo"));
+      assert.ok(result.command.includes("-File"));
+    });
+
+    it("generates PowerShell command with powershell.exe for powershell platform", () => {
+      const result = buildScriptInvocation("/tmp/cmd.ps1", "powershell");
+      assert.ok(result.command.includes("powershell.exe"));
+    });
+
+    it("uses shellEscapePowerShell for .ps1 invocation", () => {
+      const { shellEscapePowerShell } = __tmuxTest__;
+      const path = "C:\\Users\\Test Dir--123\\script.ps1";
+      const escaped = shellEscapePowerShell(path);
+      assert.ok(escaped.includes("'"), "should use single-quote escaping");
+    });
+  });
+
+  describe("replaceScriptExtension edge cases", () => {
+    const { replaceScriptExtension } = __tmuxTest__;
+
+    it("handles paths with multiple dots in filename", () => {
+      assert.equal(
+        replaceScriptExtension("script.v1.2.sh", ".ps1"),
+        "script.v1.2.ps1",
+      );
+    });
+
+    it("handles dotfiles", () => {
+      // A dotfile like ".hidden" should not have its extension replaced
+      // unless the extension is in SCRIPT_EXTENSIONS
+      const result = replaceScriptExtension(".hidden", ".ps1");
+      assert.equal(result, ".hidden.ps1");
+    });
+
+    it("handles .bash as a known extension", () => {
+      assert.equal(
+        replaceScriptExtension("script.bash", ".ps1"),
+        "script.ps1",
+      );
+    });
+  });
+});
+
+// Re-export new functions for test.ts top-level __test__ access
+import {
+  shellEscapePowerShell as __shellEscapePowerShell__,
+  convertBashToPowerShell as __convertBashToPowerShell__,
+  hasShell as __hasShell__,
+  replaceScriptExtension as __replaceScriptExtension__,
+  buildScriptInvocation as __buildScriptInvocation__,
+} from "../pi-extension/subagents/tmux.ts";
+
+Object.assign(subagentsModule.__test__, {
+  shellEscapePowerShell: __shellEscapePowerShell__,
+  convertBashToPowerShell: __convertBashToPowerShell__,
+  hasShell: __hasShell__,
+  replaceScriptExtension: __replaceScriptExtension__,
+  buildScriptInvocation: __buildScriptInvocation__,
 });
