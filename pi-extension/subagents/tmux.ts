@@ -135,18 +135,47 @@ export function convertBashToPowerShell(command: string): string {
   // Convert inline environment variables: VAR=value (only when not preceded by $env:)
   // Match KEY=VALUE at start-of-string or after whitespace.
   // Skip vars already prefixed with $env: by checking the prefix char.
+  // PowerShell requires semicolons between statements, so append "; " after each conversion.
   result = result.replace(
     /(\$env:)?(^|\s)([A-Za-z_][A-Za-z0-9_]*)=(\S*)/g,
     (_match, envPrefix, spacePrefix, key, _value) => {
       // Already has $env: prefix — leave unchanged
       if (envPrefix === "$env:") return _match;
-      // Reconstruct with optional leading whitespace
-      return (spacePrefix || "") + "$env:" + key + "=" + _value;
+      // Reconstruct with optional leading whitespace, append "; " for PowerShell statement separation
+      return (spacePrefix || "") + "$env:" + key + "=" + _value + "; ";
     },
   );
 
-  // Convert $?' to $LASTEXITCODE (the sentinel pattern used in subagent-done)
-  result = result.replace(/\$\?'/g, "$LASTEXITCODE'");
+  // Convert bash exit-code sentinel ($?'__') to PowerShell concatenation.
+  //
+  // In bash: echo '__SUBAGENT_DONE_'$?'__'
+  //   - $?'__'  → $LASTEXITCODE (unquoted, expands) + '__' (literal)
+  //     result: __SUBAGENT_DONE_0__
+  //
+  // In PowerShell: single-quoted strings have zero expansion, so the
+  // broken conversion produced '__SUBAGENT_DONE_$LASTEXITCODE'__' which
+  // printed the literal text "$LASTEXITCODE" instead of the exit code.
+  //
+  // PowerShell also splits the concatenation across multiple output lines
+  // when written as: Write-Output 'a' + $var + 'b'
+  // because `+` at the start of a line is parsed as a unary operator,
+  // creating separate statements.  Wrap the entire concatenation in parens
+  // to keep it as a single expression: Write-Output ('a' + $var + 'b')
+  //
+  // We use a single replacement that matches the full sentinel expression
+  // (echo prefix + $?' + suffix) so we can wrap the concatenation in parens
+  // in one step, avoiding the two-pass problem.
+  const _dollar = "$";
+  const _exitcode = _dollar + "LASTEXITCODE.ToString()";
+  result = result.replace(
+    /(Write-Output|echo)\s+('[^']+')\$\?('[^']+')/g,
+    (_match, _cmd, prefix, suffix) => {
+      // prefix = "'__SUBAGENT_DONE_'", strip leading and trailing quotes
+      const content = prefix.slice(1, -1);  // __SUBAGENT_DONE_
+      const end = suffix.slice(1, -1);       // __
+      return `Write-Output ('${content}' + ${_exitcode} + '${end}');`;
+    },
+  );
 
   return result;
 }

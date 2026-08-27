@@ -2886,9 +2886,31 @@ describe("tmux.ts", () => {
       assert.ok(result.includes("$env:VAR=value"), "existing $env: should not be doubled");
     });
 
-    it("converts $?' to $LASTEXITCODE'", () => {
+    it("converts $?' sentinel to PowerShell string concatenation", () => {
       const result = convertBashToPowerShell("echo '__SUBAGENT_DONE_'$?'__'");
-      assert.ok(result.includes("$LASTEXITCODE'"), "should convert $?' to $LASTEXITCODE'");
+      // Must produce a single-line PS expression wrapped in parens to avoid
+      // PowerShell's statement parser splitting on `+` at line start:
+      //   Write-Output ('__SUBAGENT_DONE_' + $LASTEXITCODE.ToString() + '__');
+      // NOT the broken: '__SUBAGENT_DONE_$LASTEXITCODE'__' (literal text, no expansion)
+      assert.equal(
+        result,
+        "Write-Output ('__SUBAGENT_DONE_' + $LASTEXITCODE.ToString() + '__');",
+        "should produce parenthesized concatenation",
+      );
+      assert.ok(
+        result.includes("$LASTEXITCODE.ToString()"),
+        "should convert $?' to $LASTEXITCODE.ToString()",
+      );
+      // Verify the + operator is used for concatenation inside parens
+      assert.ok(
+        /\(.*\+\s+\$LASTEXITCODE\.ToString\(\)\s+\+.*\)/.test(result),
+        "should use PS string concatenation with + operator around $LASTEXITCODE inside parens",
+      );
+      // Verify the sentinel is NOT trapped inside single quotes
+      assert.ok(
+        !result.includes("__SUBAGENT_DONE_$"),
+        "should NOT leave literal $LASTEXITCODE inside single quotes",
+      );
     });
 
     it("handles combined conversions", () => {
@@ -2906,6 +2928,11 @@ describe("tmux.ts", () => {
       assert.ok(ps.includes("Write-Output"), "echo converted");
       assert.ok(ps.includes(";"), "&& converted");
       assert.ok(ps.includes("$LASTEXITCODE"), "exit code converted");
+      // Verify sentinel uses parenthesized concatenation
+      assert.ok(
+        /Write-Output\s*\(\s*'__DONE_'\s+\+\s+\$LASTEXITCODE\.ToString\(\)\s+\+\s+'__'\s*\)/.test(ps),
+        "sentinel uses PS concatenation inside parens",
+      );
     });
 
     it("preserves already-correct PowerShell syntax", () => {
