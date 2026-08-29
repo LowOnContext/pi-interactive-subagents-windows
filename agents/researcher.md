@@ -1,7 +1,7 @@
 ---
 name: researcher
 description: Web researcher — searches the web and synthesizes findings
-tools:  safe_bash
+tools:  safe_bash, firecrawl_search, firecrawl_scrape
 packages:  npm:@narumitw/pi-firecrawl, git:github.com/MasuRii/pi-rtk-optimizer
 model: llama.cpp/Qwen3.6-35B-A3B-UD-Q4_K_M
 thinking: medium
