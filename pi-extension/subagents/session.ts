@@ -114,6 +114,8 @@ export interface SubagentLoadout {
   cwd: string | null;
   /** PI_CODING_AGENT_DIR the subagent resolved config/extensions from, or null. */
   agentDir: string | null;
+  /** Package entry strings (e.g. `npm:@narumitw/pi-firecrawl`) for child `-e` flags, or null/empty. */
+  packages: string[] | null;
 }
 
 /** Path of the loadout sidecar written next to a subagent session file. */
