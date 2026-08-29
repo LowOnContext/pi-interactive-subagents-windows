@@ -174,6 +174,32 @@ Spawns must name a known agent at **every** depth. A top-level session may spawn
 
 Extensions can register additional tools for sub-agents at runtime via `registerToolExtension(name, path)` on the `__pi_interactive_subagents` process global.
 
+### Package extensions
+
+Agents can declare external pi package extensions in their frontmatter using the `packages:` field:
+
+```yaml
+---
+name: researcher
+tools: safe_bash
+packages: npm:@narumitw/pi-firecrawl, git:github.com/MasuRii/pi-rtk-optimizer
+---
+```
+
+Each comma-separated entry is passed as a separate `-e` flag to the child `pi` process, loading the extension even though `--no-extensions` disables global discovery.
+
+**Important:** If a package extension uses lazy loading (tools register only when first invoked), you must also list those tools in the `tools:` field so the agent can discover them:
+
+```yaml
+---
+name: researcher
+tools: safe_bash, firecrawl_search, firecrawl_scrape
+packages: npm:@narumitw/pi-firecrawl
+---
+```
+
+Without listing the tools in `tools:`, the agent's tool schema won't include them even though the extension is loaded.
+
 ## Role folders
 
 `cwd` starts a sub-agent in a directory with its own config, so role-specific setups (CLAUDE.md, skills, extensions) apply:
@@ -225,7 +251,7 @@ Status display is configured via `config.json` in the extension directory (copy 
 
 ## Acknowledgements
 
-Forked from [HazAT/pi-interactive-subagents](https://github.com/HazAT/pi-interactive-subagents), which originated the subagent architecture, the multi-multiplexer surface layer, and the status widget; its supervision features were inspired by [RepoPrompt](https://repoprompt.com/).
+Forked from [HazAT/pi-interactive-subagents](https://github.com/HazAT/pi-interactive-subagents), which originated the subagent architecture, the multi-multiplexer surface layer, and the status widget; its supervision features were inspired by [RepoPrompt](https://repoprompt.com/). Additional modifications based on [amosblomqvist/pi-interactive-subagents](https://github.com/amosblomqvist/pi-interactive-subagents).
 
 ## License
 

@@ -136,6 +136,8 @@ interface AgentDefaults {
   cli?: string;
   body?: string;
   disableModelInvocation?: boolean;
+  /** Package entry strings (e.g. `npm:@narumitw/pi-firecrawl`) for child `-e` flags. */
+  packages?: string[];
 }
 
 type AgentSource = "package" | "global" | "project";
@@ -202,6 +204,26 @@ export function registerToolExtension(name: string, extensionPath: string): void
 (globalThis as any).__pi_interactive_subagents = {
   registerToolExtension,
 };
+
+// ── Package extension cache ──────────────────────────────────────────────
+// Reads `settings.json` packages array so `applySandboxToParts()` can pass
+// them as `-e` flags to child pi processes. Refilled on `session_start` and
+// on `/reload` (which fires a fresh `session_start` event).
+let cachedPackageEntries: string[] = [];
+
+function readAgentSettings(): { packages?: string[] } | undefined {
+  const settingsPath = join(getAgentConfigDir(), "settings.json");
+  if (!existsSync(settingsPath)) return undefined;
+  try {
+    return JSON.parse(readFileSync(settingsPath, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+function refreshPackageCache(): void {
+  cachedPackageEntries = readAgentSettings()?.packages ?? [];
+}
 
 /**
  * Map a custom (non-built-in) tool name to the pi-extension file that
@@ -301,6 +323,7 @@ function parseAgentDefinition(content: string, fallbackName: string): AgentDefin
     body: body || undefined,
     disableModelInvocation:
       getFrontmatterValue(frontmatter, "disable-model-invocation")?.toLowerCase() === "true",
+    packages: parseCommaList(getFrontmatterValue(frontmatter, "packages")),
   };
 }
 
@@ -873,6 +896,16 @@ function applySandboxToParts(
       parts.push("-e", shellEscape(extPath));
     }
   }
+
+  // Add package entries from the loadout as `-e` flags.
+  // These are not file paths — pi resolves npm:… / git:… entry strings via -e.
+  // Package extensions loaded this way register their tools globally, so they
+  // become available without needing to be listed in --tools.
+  if (loadout.packages && loadout.packages.length > 0) {
+    for (const pkgEntry of loadout.packages) {
+      parts.push("-e", shellEscape(pkgEntry));
+    }
+  }
 }
 
 function buildPiPromptArgs(params: {
@@ -1354,6 +1387,7 @@ async function launchSubagent(
     autoExit: agentDefs?.autoExit ?? false,
     cwd: effectiveCwd ?? null,
     agentDir: resolvedAgentDir,
+    packages: agentDefs?.packages ?? null,
   };
   writeSubagentLoadout(subagentSessionFile, loadout);
 
@@ -1658,6 +1692,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     if (!prevAbort || prevAbort.signal.aborted) {
       (globalThis as any)[POLL_ABORT_KEY] = new AbortController();
     }
+    refreshPackageCache();
   });
 
   // Clean up on session shutdown
